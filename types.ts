@@ -33,6 +33,7 @@ export type ConfiguratorState = {
   viewMode: '2d' | '3d';
   showDimensions: boolean;
   cameraZoom: number;
+  showEnvironmentBackground: boolean;
   
   // Индивидуальные материалы
   stellaMaterial: Material;
@@ -53,9 +54,9 @@ export type ConfiguratorState = {
   inscriptionFontSize: number;
   
   extras: {
-    vases: { id: string; x: number; y: number }[];
-    tables: { id: string; x: number; y: number }[];
-    benches: { id: string; x: number; y: number }[];
+    vases: { id: string; x: number; y: number; material: Material }[];
+    tables: { id: string; x: number; y: number; material: Material }[];
+    benches: { id: string; x: number; y: number; material: Material }[];
   };
 };
 

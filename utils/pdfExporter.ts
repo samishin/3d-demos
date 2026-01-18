@@ -2,9 +2,6 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { ConfiguratorState } from '../types';
 
-/**
- * Экспорт конфигурации в PDF
- */
 export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTMLCanvasElement | null) => {
   try {
     const doc = new jsPDF({
@@ -191,7 +188,6 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
         doc.setTextColor(120, 120, 120);
         doc.text('Визуализация конфигурации', margin, currentY);
       } catch (canvasError) {
-        console.warn('Не удалось создать скриншот сцены:', canvasError);
         doc.setFontSize(10);
         doc.setFont('helvetica', 'italic');
         doc.setTextColor(150, 150, 150);
@@ -219,14 +215,10 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
 
     return true;
   } catch (error) {
-    console.error('Ошибка при экспорте в PDF:', error);
     throw error;
   }
 };
 
-/**
- * Получение canvas элемента из Three.js сцены
- */
 export const getCanvasElement = (): HTMLCanvasElement | null => {
   const canvases = document.querySelectorAll('canvas');
   

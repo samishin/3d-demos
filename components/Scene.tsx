@@ -1,9 +1,10 @@
 
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import * as THREE from 'three';
 import { useTexture, Text, Html, useGLTF, useProgress } from '@react-three/drei';
 import { useThree, useFrame, ThreeEvent } from '@react-three/fiber';
 import { ConfiguratorState, Material, Position2D } from '../types';
+import { MATERIALS } from '../constants';
 import { Move, Ruler } from 'lucide-react';
 
 interface SceneProps {
@@ -72,49 +73,160 @@ const DimensionLine = ({
   );
 };
 
-const PBRMaterial = ({ material, highlight }: { material: Material; highlight?: boolean }) => {
+// Глобальный кэш текстур для предотвращения повторной загрузки
+const textureCache = new Map<string, THREE.Texture>();
+
+// Функция для получения текстуры из кэша или загрузки новой
+const getCachedTexture = (url: string): Promise<THREE.Texture | null> => {
+  return new Promise((resolve) => {
+    // Проверяем кэш
+    if (textureCache.has(url)) {
+      resolve(textureCache.get(url)!);
+      return;
+    }
+    
+    // Загружаем новую текстуру
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      url,
+      (texture) => {
+        // Настройка текстуры для оптимальной производительности
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.magFilter = THREE.LinearFilter;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.generateMipmaps = true;
+        texture.needsUpdate = true;
+        
+        // Сохраняем в кэш
+        textureCache.set(url, texture);
+        resolve(texture);
+      },
+      undefined,
+      (error) => {
+        console.warn(`Не удалось загрузить текстуру ${url}:`, error);
+        resolve(null);
+      }
+    );
+  });
+};
+
+// Максимально оптимизированный компонент материалов
+const PBRMaterial = React.memo(({ material, highlight }: { material: Material; highlight?: boolean }) => {
   const materialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   
-  // Create material once and store in ref
+  // Мемоизированный маппинг материалов к папкам текстур
+  const textureConfig = useMemo(() => ({
+    'm1': {folder: 'gabbo', normalExt: 'png', hasZero: false},
+    'm2': {folder: 'Jalgis', normalExt: 'jpg', hasZero: false},
+    'm3': {folder: 'Jeltau', normalExt: 'jpg', hasZero: false},
+    'm4': {folder: 'Kapustinski', normalExt: 'jpg', hasZero: false},
+    'm5': {folder: 'Rombak', normalExt: 'png', hasZero: false}
+  }), []);
+  
+  const config = textureConfig[material.id] || textureConfig['m1'];
+  const textureFolder = config.folder;
+  const normalSuffix = config.hasZero ? '0_Normal' : '_Normal';
+  
+  // Асинхронная загрузка текстур с кэшированием
+  const [textures, setTextures] = useState<{
+    color: THREE.Texture | null;
+    normal: THREE.Texture | null;
+    roughness: THREE.Texture | null;
+  }>({ color: null, normal: null, roughness: null });
+  
+  // Загрузка текстур один раз при смене материала
+  useEffect(() => {
+    let isCancelled = false;
+    
+    const loadAllTextures = async () => {
+      try {
+        // Параллельная загрузка всех текстур
+        const [colorTex, normalTex, roughnessTex] = await Promise.all([
+          getCachedTexture(`./textures/${textureFolder}/${textureFolder}_Color.jpg`),
+          getCachedTexture(`./textures/${textureFolder}/${textureFolder}${normalSuffix}.${config.normalExt}`),
+          getCachedTexture(`./textures/${textureFolder}/${textureFolder}_Roughness.jpg`)
+        ]);
+        
+        // Только если компонент еще смонтирован
+        if (!isCancelled) {
+          setTextures({
+            color: colorTex,
+            normal: normalTex,
+            roughness: roughnessTex
+          });
+        }
+      } catch (error) {
+        console.error('Ошибка загрузки текстур:', error);
+      }
+    };
+    
+    loadAllTextures();
+    
+    return () => {
+      isCancelled = true;
+    };
+  }, [textureFolder, normalSuffix, config.normalExt]);
+  
+  // Переиспользуем существующий материал или создаем новый
   if (!materialRef.current) {
-    materialRef.current = new THREE.MeshPhysicalMaterial({
+    const baseParams: any = {
       color: highlight ? "#3b82f6" : material.color,
       roughness: material.roughness,
       metalness: material.metalness,
       clearcoat: material.clearcoat || 0,
       clearcoatRoughness: 0.05,
-      reflectivity: 0.8,
-      envMapIntensity: highlight ? 2.5 : 1.2,
+      reflectivity: 0.5,
+      envMapIntensity: highlight ? 1.5 : 0.6,
       emissive: highlight ? "#3b82f6" : "#000000",
-      emissiveIntensity: highlight ? 0.3 : 0
-    });
+      emissiveIntensity: highlight ? 0.2 : 0
+    };
+    
+    // Добавляем доступные текстуры при создании
+    if (textures.color) baseParams.map = textures.color;
+    if (textures.normal) {
+      baseParams.normalMap = textures.normal;
+      baseParams.normalScale = new THREE.Vector2(1, 1);
+    }
+    if (textures.roughness) baseParams.roughnessMap = textures.roughness;
+    
+    materialRef.current = new THREE.MeshPhysicalMaterial(baseParams);
   }
 
-  // Update material properties when they change
-  useEffect(() => {
+  // Быстрое обновление материала без ререндеров
+  useLayoutEffect(() => {
     if (materialRef.current) {
       const mat = materialRef.current;
+      
+      // Мгновенное обновление всех свойств
       mat.color.setStyle(highlight ? "#3b82f6" : material.color);
       mat.roughness = material.roughness;
       mat.metalness = material.metalness;
       mat.clearcoat = material.clearcoat || 0;
       mat.emissive.setStyle(highlight ? "#3b82f6" : "#000000");
       mat.emissiveIntensity = highlight ? 0.3 : 0;
+      
+      // Мгновенное обновление текстур с проверкой наличия
+      mat.map = textures.color || null;
+      mat.normalMap = textures.normal || null;
+      mat.roughnessMap = textures.roughness || null;
+      
+      // Отключаем normalScale если нет normal map
+      if (!textures.normal) {
+        mat.normalScale = new THREE.Vector2(0, 0);
+      } else {
+        mat.normalScale = new THREE.Vector2(1, 1);
+      }
+      
       mat.needsUpdate = true;
     }
-  }, [material.color, material.roughness, material.metalness, material.clearcoat, highlight]);
+  }, [textures.color, textures.normal, textures.roughness, material, highlight]);
 
   return <primitive object={materialRef.current} />;
-};
+});
 
-const GrassPlane = ({ width, length }: { width: number, length: number }) => {
-  return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, 0]} receiveShadow>
-      <planeGeometry args={[width, length]} />
-      <meshStandardMaterial color="#2a3d1d" roughness={1} />
-    </mesh>
-  );
-};
+
+
 
 interface DraggableProps {
   id: string;
@@ -132,7 +244,8 @@ interface DraggableProps {
   objectType?: 'vase' | 'table' | 'bench' | 'default'; // Новый параметр для определения типа объекта
 }
 
-const Draggable: React.FC<DraggableProps> = ({ 
+// Максимально оптимизированный компонент декоративных элементов
+const Draggable: React.FC<DraggableProps> = React.memo(({ 
   id,
   activeId,
   setActiveId,
@@ -150,62 +263,62 @@ const Draggable: React.FC<DraggableProps> = ({
   const isDragging = activeId === id;
   const { raycaster, gl } = useThree();
   
-  // Рассчитываем оптимальное положение стрелки в зависимости от типа объекта
-  const getHandlePosition = (): [number, number, number] => {
+  // Мемоизированный расчет позиции хендла
+  const getHandlePosition = useCallback((): [number, number, number] => {
     switch (objectType) {
       case 'vase':
-        return [0, 0.3, 0]; // Для вазы - выше, так как она маленькая
+        return [0, 0.3, 0];
       case 'table':
-        return [0, 0.5, 0]; // Для столика - средняя высота
+        return [0, 0.5, 0];
       case 'bench':
-        return [0, 0.4, 0]; // Для лавочки - немного ниже столика
+        return [0, 0.4, 0];
       default:
-        return handleOffset; // Используем стандартное значение
+        return handleOffset as [number, number, number];
     }
-  };
+  }, [objectType, handleOffset]);
   
-  const actualHandleOffset = getHandlePosition();
-  const planeIntersect = new THREE.Plane(new THREE.Vector3(0, 1, 0), -heightOffset);
+  const actualHandleOffset = useMemo(() => getHandlePosition(), [getHandlePosition]);
+  const planeIntersect = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), -heightOffset), [heightOffset]);
   
-  useFrame(() => {
+  // Максимально оптимизированный useFrame с мемоизацией
+  const frameHandler = useCallback(() => {
     if (!isDragging) return;
 
     const intersectPoint = new THREE.Vector3();
     if (raycaster.ray) {
       raycaster.ray.intersectPlane(planeIntersect, intersectPoint);
       
-      const newX = THREE.MathUtils.clamp(
-        intersectPoint.x, 
-        bounds.minX + size[0]/2, 
-        bounds.maxX - size[0]/2
-      );
-      const newZ = THREE.MathUtils.clamp(
-        intersectPoint.z, 
-        bounds.minZ + size[1]/2, 
-        bounds.maxZ - size[1]/2
-      );
+      // Оптимизированный clamp без дополнительных вызовов
+      const halfWidth = size[0]/2;
+      const halfLength = size[1]/2;
+      const newX = Math.max(bounds.minX + halfWidth, Math.min(bounds.maxX - halfWidth, intersectPoint.x));
+      const newZ = Math.max(bounds.minZ + halfLength, Math.min(bounds.maxZ - halfLength, intersectPoint.z));
 
+      // Минимальная проверка изменений
       if (Math.abs(newX - position[0]) > 0.001 || Math.abs(newZ - position[2]) > 0.001) {
         onMove([newX, position[1], newZ]);
       }
     }
-  });
+  }, [isDragging, raycaster, planeIntersect, bounds, size, position, onMove]);
+  
+  useFrame(frameHandler);
 
-  const handleHandleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+  const handleHandleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     if (activeId === null) {
       setActiveId(id);
     } else if (isDragging) {
       setActiveId(null);
     }
-  };
+  }, [activeId, id, isDragging, setActiveId]);
 
+  // Оптимизированные эффекты с правильными зависимостями
   useEffect(() => {
     if (!isDragging) return;
     const handleGlobalClick = () => setActiveId(null);
     window.addEventListener('click', handleGlobalClick);
     return () => window.removeEventListener('click', handleGlobalClick);
-  }, [isDragging]);
+  }, [isDragging, setActiveId]);
 
   useEffect(() => {
     gl.domElement.style.cursor = isDragging ? 'move' : 'default';
@@ -241,7 +354,7 @@ const Draggable: React.FC<DraggableProps> = ({
       )}
     </group>
   );
-};
+});
 
 const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boolean; modelUrl?: string }> = React.memo(({ id, material, highlight = false, modelUrl = '' }) => {
   // Загружаем GLB модель если указана (с кэшированием по умолчанию)
@@ -252,7 +365,6 @@ const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boo
   const error = 'error' in gltfResult ? (gltfResult as any).error : null;
   
   if (error) {
-    console.error('GLTF loading error:', error);
     // В случае ошибки используем программную геометрию
     modelUrl = '';
   }
@@ -276,6 +388,11 @@ const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boo
       shape.bezierCurveTo(0, 0.5, 0.2, 0.7, 0.4, 0.6);
       shape.bezierCurveTo(0.8, 0.4, 0.7, -0.3, 0, -0.6);
       geom = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.02 });
+      
+      // === UV КООРДИНАТЫ ДЛЯ ФИГУРЫ "СЕРДЦЕ" (s5) ===
+      // Здесь можно изменить UV координаты для текстурного наложения
+      // geom.attributes.uv.array - массив UV координат
+      // geom.attributes.uv needsUpdate = true после изменения
     } else {
       const width = id === 's6' ? 1.4 : 0.8;
       const height = 1.2;
@@ -288,8 +405,18 @@ const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boo
         else shape.bezierCurveTo(width/4, height/2 + 0.1, -width/4, height/2 - 0.3, -width/2, height/2 -0.1);
         shape.lineTo(-width/2, -height/2);
         geom = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.01, bevelSize: 0.01 });
+        
+        // === UV КООРДИНАТЫ ДЛЯ АРОК (s2, s3) ===
+        // Здесь можно изменить UV координаты для текстурного наложения
+        // geom.attributes.uv.array - массив UV координат
+        // geom.attributes.uv needsUpdate = true после изменения
       } else {
         geom = new THREE.BoxGeometry(width, height, depth);
+        
+        // === UV КООРДИНАТЫ ДЛЯ ПРЯМОУГОЛЬНЫХ СТЕЛ (s1, s6) ===
+        // Здесь можно изменить UV координаты для текстурного наложения
+        // geom.attributes.uv.array - массив UV координат
+        // geom.attributes.uv needsUpdate = true после изменения
       }
     }
     geom.computeBoundingBox();
@@ -308,7 +435,8 @@ const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boo
           roughness: material.roughness || 0.1,
           metalness: material.metalness || 0.0,
           clearcoat: material.clearcoat || 0.0,
-          ...(highlight && { emissive: new THREE.Color(0.1, 0.1, 0.2) })
+          envMapIntensity: highlight ? 1.5 : 0.6, // Пониженная интенсивность окружения
+          ...(highlight && { emissive: new THREE.Color(0.1, 0.1, 0.2), emissiveIntensity: 0.2 })
         });
       }
     });
@@ -363,13 +491,165 @@ const FlowerbedGeometry: React.FC<{ id: string; material: Material; width: numbe
       {id === 'fb1' && <mesh castShadow position={[0, h/2, t/2]}><boxGeometry args={[width, h, t]} /><PBRMaterial material={material} highlight={highlight} /></mesh>}
       <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, h * 0.4, length/2]}>
         <planeGeometry args={[width - t*2, length - t*2]} />
-        <meshStandardMaterial color="#2d2015" />
+        <meshStandardMaterial 
+          color="#2d2015" 
+          roughness={0.8}
+          metalness={0.0}
+          envMapIntensity={0.1}
+        />
       </mesh>
     </group>
   );
 };
 
-const FenceGeometry: React.FC<{ id: string; material: Material; width: number; length: number }> = ({ id, material, width, length }) => {
+// Оптимизированный компонент секции ограды с мемоизацией
+const FenceSection = React.memo(({ start, end, vertical, fenceId, material, height, railThickness }: { 
+  start: [number, number], 
+  end: [number, number], 
+  vertical?: boolean,
+  fenceId: string,
+  material: Material,
+  height: number,
+  railThickness: number
+}) => {
+  const dist = Math.sqrt(Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2));
+  const centerX = (start[0] + end[0]) / 2;
+  const centerZ = (start[1] + end[1]) / 2;
+  const rotation = vertical ? Math.PI / 2 : 0;
+  
+  // Максимальная оптимизация: один меш вместо множества
+  const fenceGeometry = useMemo(() => {
+    const group = new THREE.Group();
+    
+    // Создаем геометрию для всех элементов в одном меше
+    const geometries: THREE.BufferGeometry[] = [];
+    const positions: THREE.Vector3[] = [];
+    
+    // Основные рельсы
+    const railGeo = new THREE.BoxGeometry(dist, railThickness, railThickness);
+    
+    // Верхний рельс
+    geometries.push(railGeo.clone());
+    positions.push(new THREE.Vector3(0, height/2 - railThickness, 0));
+    
+    // Нижний рельс
+    geometries.push(railGeo.clone());
+    positions.push(new THREE.Vector3(0, -height/2 + railThickness, 0));
+    
+    // Дополнительные элементы в зависимости от типа
+    if (fenceId === 'f1') {
+      // Кованая классика - ограниченное количество цилиндров
+      const elementCount = Math.min(Math.floor(dist / 0.2), 15);
+      const cylinderGeo = new THREE.CylinderGeometry(0.005, 0.005, height - railThickness * 2, 8);
+      
+      for (let i = 0; i < elementCount; i++) {
+        geometries.push(cylinderGeo.clone());
+        positions.push(new THREE.Vector3(
+          (i * (dist / elementCount)) - (dist / 2) + (dist / elementCount / 2), 
+          0, 
+          0
+        ));
+      }
+    } else if (fenceId === 'f3') {
+      // Современный металл - три тонкие линии
+      const lineGeo = new THREE.BoxGeometry(dist, 0.005, 0.005);
+      [-0.05, 0, 0.05].forEach(offset => {
+        geometries.push(lineGeo.clone());
+        positions.push(new THREE.Vector3(0, offset, 0));
+      });
+    } else if (fenceId === 'f2') {
+      // Гранитные столбики - сплошная балка
+      const beamGeo = new THREE.BoxGeometry(dist, railThickness * 2, railThickness * 2);
+      geometries.push(beamGeo);
+      positions.push(new THREE.Vector3(0, 0, 0));
+    } else if (fenceId === 'f4') {
+      // Волна - массивная линия
+      const waveGeo = new THREE.BoxGeometry(dist, 0.4, 0.08);
+      geometries.push(waveGeo);
+      positions.push(new THREE.Vector3(0, 0, 0));
+    }
+    
+    // Объединяем все геометрии
+    const mergedGeometry = new THREE.BufferGeometry();
+    const mergedPositions: number[] = [];
+    const mergedIndices: number[] = [];
+    let indexOffset = 0;
+    
+    geometries.forEach((geo, i) => {
+      const pos = geo.attributes.position.array as Float32Array;
+      const position = positions[i];
+      
+      // Добавляем вершины с учетом позиции
+      for (let j = 0; j < pos.length; j += 3) {
+        mergedPositions.push(pos[j] + position.x, pos[j+1] + position.y, pos[j+2] + position.z);
+      }
+      
+      // Добавляем индексы
+      if (geo.index) {
+        const indices = geo.index.array as Uint32Array;
+        for (let j = 0; j < indices.length; j++) {
+          mergedIndices.push(indices[j] + indexOffset);
+        }
+      } else {
+        // Если нет индексов, создаем их
+        for (let j = 0; j < pos.length / 3; j++) {
+          mergedIndices.push(j + indexOffset);
+        }
+      }
+      
+      indexOffset += pos.length / 3;
+    });
+    
+    mergedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(mergedPositions, 3));
+    mergedGeometry.setIndex(mergedIndices);
+    mergedGeometry.computeVertexNormals();
+    
+    return mergedGeometry;
+  }, [fenceId, dist, height, railThickness]);
+  
+  return (
+    <mesh 
+      geometry={fenceGeometry} 
+      position={[centerX, height / 2, centerZ]} 
+      rotation={[0, rotation, 0]}
+      castShadow={false} // Отключаем тени для производительности
+    >
+      <PBRMaterial material={material} />
+    </mesh>
+  );
+});
+
+// Оптимизированный компонент столбика с мемоизацией
+const Pillar = React.memo(({ pos, fenceId, material, height, pillarThickness }: { 
+  pos: [number, number],
+  fenceId: string,
+  material: Material,
+  height: number,
+  pillarThickness: number
+}) => {
+  // Для ограды "волна" используем более массивные гранитные столбики
+  const pillarWidth = fenceId === 'f4' ? 0.15 : pillarThickness;
+  const pillarHeight = fenceId === 'f4' ? height + 0.15 : height + 0.05;
+  
+  // Оптимизированная геометрия столбика
+  const pillarGeometry = useMemo(() => {
+    const geo = new THREE.BoxGeometry(pillarWidth, pillarHeight, pillarWidth);
+    geo.computeBoundingBox();
+    return geo;
+  }, [pillarWidth, pillarHeight]);
+  
+  return (
+    <mesh 
+      geometry={pillarGeometry}
+      position={[pos[0], pillarHeight / 2, pos[1]]} 
+      castShadow={false} // Отключаем тени для производительности
+    >
+      <PBRMaterial material={material} />
+    </mesh>
+  );
+});
+
+const FenceGeometry: React.FC<{ id: string; material: Material; width: number; length: number }> = React.memo(({ id, material, width, length }) => {
   const height = 0.4;
   const pillarThickness = id === 'f2' ? 0.12 : 0.04;
   const railThickness = 0.02;
@@ -377,71 +657,61 @@ const FenceGeometry: React.FC<{ id: string; material: Material; width: number; l
   const sideHalf = width / 2;
   const lengthHalf = length / 2;
 
-  const FenceSection = ({ start, end, vertical }: { start: [number, number], end: [number, number], vertical?: boolean }) => {
-    const dist = Math.sqrt(Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2));
-    const centerX = (start[0] + end[0]) / 2;
-    const centerZ = (start[1] + end[1]) / 2;
-    const rotation = vertical ? Math.PI / 2 : 0;
+  // Максимальная оптимизация: предвычисляем все данные
+  const fenceData = useMemo(() => {
+    const pillars = [
+      [-sideHalf, -lengthHalf],
+      [sideHalf, -lengthHalf],
+      [-sideHalf, lengthHalf],
+      [sideHalf, lengthHalf],
+      [-entranceWidth/2, lengthHalf],
+      [entranceWidth/2, lengthHalf]
+    ];
     
-    // Реализация "волны" - массивная линия
-    if (id === 'f4') {
-      return (
-        <group position={[centerX, height / 2, centerZ]} rotation={[0, rotation, 0]}>
-          {/* Нижний рельс */}
-          <mesh position={[0, -height/2 + railThickness, 0]} castShadow>
-            <boxGeometry args={[dist, railThickness, railThickness]} />
-            <PBRMaterial material={material} />
-          </mesh>
-          
-          {/* Массивная волна (толстая линия) по центру */}
-          <mesh 
-            position={[0, 0, 0]} 
-            castShadow
-          >
-            <boxGeometry args={[dist, 0.4, 0.08]} />
-            <PBRMaterial material={material} />
-          </mesh>
-        </group>
-      );
-    }
+    const sections = [
+      { start: [-sideHalf, -lengthHalf], end: [sideHalf, -lengthHalf] },
+      { start: [-sideHalf, -lengthHalf], end: [-sideHalf, lengthHalf], vertical: true },
+      { start: [sideHalf, -lengthHalf], end: [sideHalf, lengthHalf], vertical: true },
+      { start: [-sideHalf, lengthHalf], end: [-entranceWidth/2, lengthHalf] },
+      { start: [entranceWidth/2, lengthHalf], end: [sideHalf, lengthHalf] }
+    ];
     
-    return (
-      <group position={[centerX, height / 2, centerZ]} rotation={[0, rotation, 0]}>
-        <mesh position={[0, height/2 - railThickness, 0]} castShadow><boxGeometry args={[dist, railThickness, railThickness]} /><PBRMaterial material={material} /></mesh>
-        <mesh position={[0, -height/2 + railThickness, 0]} castShadow><boxGeometry args={[dist, railThickness, railThickness]} /><PBRMaterial material={material} /></mesh>
-        {id === 'f1' && Array.from({ length: Math.floor(dist / 0.1) }).map((_, i) => (
-          <mesh key={i} position={[(i * 0.1) - (dist / 2) + 0.05, 0, 0]} castShadow><cylinderGeometry args={[0.005, 0.005, height - railThickness * 2]} /><PBRMaterial material={material} /></mesh>
-        ))}
-        {id === 'f3' && [0, 0.1, -0.1].map((offset, i) => (
-          <mesh key={i} position={[0, offset, 0]} castShadow><boxGeometry args={[dist, 0.01, 0.01]} /><PBRMaterial material={material} /></mesh>
-        ))}
-        {id === 'f2' && <mesh position={[0, 0, 0]} castShadow><boxGeometry args={[dist, railThickness * 2, railThickness * 2]} /><PBRMaterial material={material} /></mesh>}
-      </group>
-    );
-  };
+    return { pillars, sections };
+  }, [sideHalf, lengthHalf, entranceWidth]);
 
-  const Pillar = ({ pos }: { pos: [number, number] }) => {
-    // Для ограды "волна" используем более массивные гранитные столбики
-    const pillarWidth = id === 'f4' ? 0.15 : pillarThickness;
-    const pillarHeight = id === 'f4' ? height + 0.15 : height + 0.05;
-    
-    return (
-      <mesh position={[pos[0], pillarHeight / 2, pos[1]]} castShadow>
-        <boxGeometry args={[pillarWidth, pillarHeight, pillarWidth]} />
-        <PBRMaterial material={material} />
-      </mesh>
-    );
-  };
-
+  // Оптимизированный рендеринг - используем React.memo для каждого компонента
   return (
     <group position={[0, 0, 0]}>
-      <Pillar pos={[-sideHalf, -lengthHalf]} /><Pillar pos={[sideHalf, -lengthHalf]} /><Pillar pos={[-sideHalf, lengthHalf]} /><Pillar pos={[sideHalf, lengthHalf]} /><Pillar pos={[-entranceWidth/2, lengthHalf]} /><Pillar pos={[entranceWidth/2, lengthHalf]} />
-      <FenceSection start={[-sideHalf, -lengthHalf]} end={[sideHalf, -lengthHalf]} /><FenceSection start={[-sideHalf, -lengthHalf]} end={[-sideHalf, lengthHalf]} vertical /><FenceSection start={[sideHalf, -lengthHalf]} end={[sideHalf, lengthHalf]} vertical /><FenceSection start={[-sideHalf, lengthHalf]} end={[-entranceWidth/2, lengthHalf]} /><FenceSection start={[entranceWidth/2, lengthHalf]} end={[sideHalf, lengthHalf]} />
+      {/* Отрисовка столбиков */}
+      {fenceData.pillars.map((pos, index) => (
+        <Pillar 
+          key={`pillar-${index}`}
+          pos={[pos[0], pos[1]] as [number, number]}
+          fenceId={id}
+          material={material}
+          height={height}
+          pillarThickness={pillarThickness}
+        />
+      ))}
+      
+      {/* Отрисовка секций ограды */}
+      {fenceData.sections.map((section, index) => (
+        <FenceSection
+          key={`section-${index}`}
+          start={section.start as [number, number]}
+          end={section.end as [number, number]}
+          vertical={section.vertical}
+          fenceId={id}
+          material={material}
+          height={height}
+          railThickness={railThickness}
+        />
+      ))}
     </group>
   );
-};
+});
 
-const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
+const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible }) => {
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
   // Предзагрузка GLB моделей для предотвращения "дергания"
@@ -464,24 +734,47 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
   const siteBounds = useMemo(() => ({ minX: -sw/2, maxX: sw/2, minZ: -sl/2, maxZ: sl/2 }), [sw, sl]);
   const plinthBounds = useMemo(() => ({ minX: -pw/2, maxX: pw/2, minZ: -pl/2, maxZ: pl/2 }), [pw, pl]);
 
-  // Updated URL to a stable Unsplash source for testing CORS, or use provided if it works.
-  // The error "Could not load ... undefined" usually means CORS failure.
-  const portraitTexture = useTexture(portraitUrl || 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=400&auto=format&fit=crop');
+  // Оптимизированная загрузка текстуры портрета с кэшированием
+  const [portraitTexture, setPortraitTexture] = useState<THREE.Texture | null>(null);
   
-  // Debug texture loading
+  // Загрузка текстуры портрета через useEffect для предотвращения перезагрузки сцены
   useEffect(() => {
-    if (portraitTexture && portraitTexture.image) {
-      const img = portraitTexture.image as HTMLImageElement;
-      console.log('Portrait texture loaded:', {
-        url: portraitUrl,
-        width: img.width,
-        height: img.height,
-        ready: img.complete
-      });
+    if (!portraitUrl) {
+      setPortraitTexture(null);
+      return;
     }
-  }, [portraitTexture, portraitUrl]);
+    
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      portraitUrl,
+      (texture) => {
+        // Настройка текстуры
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.magFilter = THREE.LinearFilter;
+        texture.minFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        texture.needsUpdate = true;
+        
+        setPortraitTexture(texture);
+      },
+      undefined,
+      (error) => {
+        console.warn('Не удалось загрузить текстуру портрета:', error);
+        setPortraitTexture(null);
+      }
+    );
+    
+    // Cleanup функция для освобождения памяти
+    return () => {
+      if (portraitTexture) {
+        portraitTexture.dispose();
+      }
+    };
+  }, [portraitUrl]);
   
   const portraitSize = useMemo(() => {
+    if (!portraitTexture || !portraitTexture.image) return { width: 0.3, height: 0.4 };
     const img = portraitTexture.image as any;
     if (!img || !img.width || !img.height) return { width: 0.3, height: 0.4 };
     const imgAspect = img.width / img.height;
@@ -489,7 +782,7 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
     if (height > 0.4) { height = 0.4; width = height * imgAspect; }
     if (width > 0.4) { width = 0.4; height = width / imgAspect; }
     return { width, height };
-  }, [portraitTexture, portraitUrl]);
+  }, [portraitTexture]);
 
   // Улучшенный расчет границ текста для предотвращения выхода за края стелы
   const inscriptionLayout = useMemo(() => {
@@ -516,93 +809,84 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
   const baseHeight = useMemo(() => base?.id === 'b2' ? 0.4 : 0.2, [base]);
   const stellaHalfHeight = 0.6;
   
+  // Load GLB model for stella s4 to extract Image_ancor position
+  const gltfModel = stella?.modelUrl && stella.id === 's4' ? useGLTF(stella.modelUrl) : null;
+  
   // Extract Image_ancor position from GLB model
   const imageAnchorPosition = useMemo(() => {
-    if (stella?.modelUrl && stella.id === 's4') {
-      // Load and parse the GLB model to find Image_ancor
-      const gltf = useGLTF(stella.modelUrl);
+    if (gltfModel?.scene) {
+      let anchorFound = false;
+      let anchorPosition = { x: 0, y: 0.25, z: 0.075 }; // Default fallback
       
-      if (gltf.scene) {
-        let anchorFound = false;
-        let anchorPosition = { x: 0, y: 0.25, z: 0.075 }; // Default fallback
+      // Log all object names in the model for debugging
+      
+      gltfModel.scene.traverse((child) => {
+        // Log all named objects to see what's available
+        if (child.name) {
+        }
         
-        // Log all object names in the model for debugging
-        console.log('Scanning GLB model objects:');
+        // Primary search: exact Image_ancor
+        if (child.name && child.name.toLowerCase() === 'image_ancor') {
+          // Apply model scale factor (0.5) to convert local coords to world coords
+          const scaleFactor = 0.5;
+          anchorPosition = {
+            x: child.position.x * scaleFactor,
+            y: child.position.y * scaleFactor,
+            z: child.position.z * scaleFactor
+          };
+          anchorFound = true;
+        }
         
-        gltf.scene.traverse((child) => {
-          // Log all named objects to see what's available
-          if (child.name) {
-            console.log('- Object:', child.name, '| Type:', child.type, '| Position:', child.position);
-          }
-          
-          // Primary search: exact Image_ancor
-          if (child.name && child.name.toLowerCase() === 'image_ancor') {
-            console.log('✅ FOUND EXACT MATCH - Image_ancor object:', child.name, 'at position:', child.position);
-            // Apply model scale factor (0.5) to convert local coords to world coords
+        // Fuzzy search variations
+        const nameLower = child.name?.toLowerCase() || '';
+        
+        // Look for combinations of image/photo/portrait + anchor/placeholder/spot
+        if ((nameLower.includes('image') || nameLower.includes('photo') || nameLower.includes('portrait')) && 
+            (nameLower.includes('anchor') || nameLower.includes('placeholder') || nameLower.includes('spot') || nameLower.includes('frame'))) {
+          if (!anchorFound) { // Only use if exact match not found
             const scaleFactor = 0.5;
             anchorPosition = {
               x: child.position.x * scaleFactor,
               y: child.position.y * scaleFactor,
               z: child.position.z * scaleFactor
             };
-            console.log('📏 Scaled position:', anchorPosition);
             anchorFound = true;
           }
-          
-          // Fuzzy search variations
-          const nameLower = child.name?.toLowerCase() || '';
-          
-          // Look for combinations of image/photo/portrait + anchor/placeholder/spot
-          if ((nameLower.includes('image') || nameLower.includes('photo') || nameLower.includes('portrait')) && 
-              (nameLower.includes('anchor') || nameLower.includes('placeholder') || nameLower.includes('spot') || nameLower.includes('frame'))) {
-            console.log('🎯 Found potential anchor object:', child.name, 'at position:', child.position);
-            if (!anchorFound) { // Only use if exact match not found
-              const scaleFactor = 0.5;
-              anchorPosition = {
-                x: child.position.x * scaleFactor,
-                y: child.position.y * scaleFactor,
-                z: child.position.z * scaleFactor
-              };
-              console.log('📏 Scaled backup position:', anchorPosition);
-              anchorFound = true;
-            }
-          }
-          
-          // Look for any object that might be a face/front surface
-          if (nameLower.includes('face') || nameLower.includes('front') || nameLower.includes('surface')) {
-            console.log('🔍 Found face-related object:', child.name, 'at position:', child.position);
-            if (!anchorFound) {
-              const scaleFactor = 0.5;
-              anchorPosition = {
-                x: child.position.x * scaleFactor,
-                y: child.position.y * scaleFactor,
-                z: child.position.z * scaleFactor
-              };
-              console.log('📏 Scaled face position:', anchorPosition);
-            }
-          }
-        });
-        
-        if (anchorFound) {
-          console.log('🎯 Using Image_ancor position:', anchorPosition);
-          console.log('📏 Photo size:', portraitSize);
-          console.log('📐 World coordinates check - X:', anchorPosition.x, 'Y:', anchorPosition.y, 'Z:', anchorPosition.z);
-          return anchorPosition;
-        } else {
-          console.log('Image_ancor not found, using default position');
         }
+        
+        // Look for any object that might be a face/front surface
+        if (nameLower.includes('face') || nameLower.includes('front') || nameLower.includes('surface')) {
+          if (!anchorFound) {
+            const scaleFactor = 0.5;
+            anchorPosition = {
+              x: child.position.x * scaleFactor,
+              y: child.position.y * scaleFactor,
+              z: child.position.z * scaleFactor
+            };
+          }
+        }
+      });
+      
+      if (anchorFound) {
+        return anchorPosition;
+      } else {
       }
     }
     
     return { x: 0, y: 0.25, z: 0.075 }; // Default position
-  }, [stella]); 
+  }, [gltfModel]); 
 
   // Функция для расчета высоты поверхности в заданной точке
   const calculateSurfaceHeight = (x: number, y: number, plinthPos: Position2D, plinthWidth: number, plinthLength: number, siteBounds: any): number => {
+    // Если основания нет (null) - все элементы на уровне земли
+    if (plinth === null) {
+      return 0;
+    }
+    
     const pw = plinthWidth / 100;
     const pl = plinthLength / 100;
     
-    // Проверяем, находится ли точка на цоколе
+    // Проверяем, находится ли точка на основании
     const isInPlinth = (
       x >= plinthPos.x / 100 - pw/2 && 
       x <= plinthPos.x / 100 + pw/2 &&
@@ -611,16 +895,43 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
     );
     
     if (isInPlinth) {
-      return 0.1; // Высота цоколя
+      return 0.1; // Высота основания
     }
     
-    // Если вне цоколя - на уровне земли
+    // Если вне основания - на уровне земли
     return 0;
   };
 
+  // Максимально оптимизированная плоскость участка
+  const GroundPlane = React.memo(({ width, length }: { width: number, length: number }) => {
+    // Мемоизированная геометрия для предотвращения пересоздания
+    const groundGeometry = useMemo(() => {
+      const geo = new THREE.PlaneGeometry(width, length);
+      geo.computeBoundingBox();
+      return geo;
+    }, [width, length]);
+    
+    return (
+      <mesh 
+        geometry={groundGeometry}
+        receiveShadow 
+        position={[0, -0.01, 0]} 
+        rotation={[-Math.PI / 2, 0, 0]}
+        frustumCulled={false} // Отключаем frustum culling для плоскости
+      >
+        <meshStandardMaterial 
+          color="#2a3d1d" 
+          roughness={0.9} 
+          metalness={0.0}
+          envMapIntensity={0.1}
+          flatShading={true} // Используем flat shading для производительности
+        />
+      </mesh>
+    );
+  });
+  
   return (
     <group>
-      <GrassPlane width={sw} length={sl} />
 
       {/* Site Dimensions */}
       {showDimensions && isUIVisible && (
@@ -629,6 +940,9 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
            <DimensionLine start={[sw/2 + 0.2, 0, -sl/2]} end={[sw/2 + 0.2, 0, sl/2]} value={siteLength} color="#666" horizontal={false} viewMode={viewMode} />
         </group>
       )}
+      
+      {/* Участок - плоскость земли */}
+      <GroundPlane width={sw} length={sl} />
 
       {fence && <FenceGeometry id={fence.id} material={fenceMaterial} width={sw} length={sl} />}
 
@@ -665,7 +979,7 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
               id="monument"
               activeId={activeDragId}
               setActiveId={setActiveDragId}
-              position={[monumentPos.x / 100, 0.1, monumentPos.y / 100]}
+              position={[monumentPos.x / 100, plinth ? 0.1 : 0, monumentPos.y / 100]}
               bounds={plinthBounds}
               size={[Math.max(fbw, 1.0), Math.min(baseDepth, fbl + baseDepth - 0.2)]}
               heightOffset={0.1}
@@ -683,11 +997,13 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
                         <group position={[0, baseHeight, 0]}>
                           <group position={[0, stellaHalfHeight, 0]}>
                             <StellaGeometry id={stella.id} material={stellaMaterial} highlight={isDraggingMon} modelUrl={stella.modelUrl} />
-                            {/* Photo at Image_ancor position */}
-                            <mesh position={[imageAnchorPosition.x, imageAnchorPosition.y, imageAnchorPosition.z]}>
-                              <planeGeometry args={[portraitSize.width, portraitSize.height]} />
-                              <meshStandardMaterial map={portraitTexture} transparent side={THREE.DoubleSide} />
-                            </mesh>
+                            {/* Photo at Image_ancor position - only render when we have a portrait URL */}
+                            {portraitUrl && portraitTexture && (
+                              <mesh position={[imageAnchorPosition.x, imageAnchorPosition.y, imageAnchorPosition.z]}>
+                                <planeGeometry args={[portraitSize.width, portraitSize.height]} />
+                                <meshStandardMaterial map={portraitTexture} transparent side={THREE.DoubleSide} />
+                              </mesh>
+                            )}
                             {inscription && (
                               <Text 
                                 position={[0, inscriptionLayout.yPos, imageAnchorPosition.z + 0.01]} 
@@ -734,7 +1050,6 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
       </Draggable>
 
       {extras.vases.map((v) => (
-        // Определяем высоту вазы в зависимости от местоположения
         <Draggable 
           id={v.id} 
           activeId={activeDragId} 
@@ -756,8 +1071,13 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
           showDimensions={showDimensions}
           objectType="vase"
         >
-          {(h) => <mesh castShadow><cylinderGeometry args={[0.07, 0.05, 0.25]} /><PBRMaterial material={stellaMaterial} highlight={h} /></mesh>}
-        </Draggable>
+            {(h) => (
+              <mesh castShadow>
+                <cylinderGeometry args={[0.07, 0.05, 0.25]} />
+                <PBRMaterial material={v.material} highlight={h} />
+              </mesh>
+            )}
+          </Draggable>
       ))}
       {extras.tables.map((t) => (
         <Draggable 
@@ -781,19 +1101,19 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
           showDimensions={showDimensions}
           objectType="table"
         >
-          {(h) => (
-            <group>
-              <mesh position={[0, 0.35, 0]} castShadow>
-                <cylinderGeometry args={[0.25, 0.25, 0.05]} />
-                <PBRMaterial material={baseMaterial} highlight={h} />
-              </mesh>
-              <mesh position={[0, 0.175, 0]} castShadow>
-                <cylinderGeometry args={[0.03, 0.03, 0.35]} />
-                <PBRMaterial material={baseMaterial} highlight={h} />
-              </mesh>
-            </group>
-          )}
-        </Draggable>
+            {(h) => (
+              <group>
+                <mesh position={[0, 0.35, 0]} castShadow>
+                  <cylinderGeometry args={[0.25, 0.25, 0.05]} />
+                  <PBRMaterial material={t.material} highlight={h} />
+                </mesh>
+                <mesh position={[0, 0.175, 0]} castShadow>
+                  <cylinderGeometry args={[0.03, 0.03, 0.35]} />
+                  <PBRMaterial material={t.material} highlight={h} />
+                </mesh>
+              </group>
+            )}
+          </Draggable>
       ))}
       {extras.benches.map((b) => (
         <Draggable 
@@ -821,15 +1141,15 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
             <group>
               <mesh position={[0, 0.2, 0]} castShadow>
                 <boxGeometry args={[0.8, 0.05, 0.3]} />
-                <PBRMaterial material={baseMaterial} highlight={h} />
+                <PBRMaterial material={b.material} highlight={h} />
               </mesh>
               <mesh position={[-0.3, 0.1, 0]} castShadow>
                 <boxGeometry args={[0.05, 0.2, 0.25]} />
-                <PBRMaterial material={baseMaterial} highlight={h} />
+                <PBRMaterial material={b.material} highlight={h} />
               </mesh>
               <mesh position={[0.3, 0.1, 0]} castShadow>
                 <boxGeometry args={[0.05, 0.2, 0.25]} />
-                <PBRMaterial material={baseMaterial} highlight={h} />
+                <PBRMaterial material={b.material} highlight={h} />
               </mesh>
             </group>
           )}
@@ -837,6 +1157,6 @@ const Scene: React.FC<SceneProps> = ({ config, onUpdate, isUIVisible }) => {
       ))}
     </group>
   );
-};
+});
 
 export default Scene;

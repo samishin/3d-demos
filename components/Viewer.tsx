@@ -4,7 +4,6 @@ import { Canvas } from '@react-three/fiber';
 import { 
   OrbitControls, 
   MapControls, 
-  ContactShadows, 
   Environment, 
   Grid,
   PerspectiveCamera,
@@ -12,6 +11,7 @@ import {
   GizmoHelper,
   GizmoViewport
 } from '@react-three/drei';
+import * as THREE from 'three';
 import { ZoomIn, Plus, Minus } from 'lucide-react';
 import Scene from './Scene';
 import { ConfiguratorState } from '../types';
@@ -27,7 +27,6 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
   const controlsRef = useRef<any>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  // Обработчик зума мышкой
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -35,7 +34,7 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
       const delta = event.deltaY > 0 ? -0.1 : 0.1;
-      const newZoom = Math.max(0.5, Math.min(3, config.cameraZoom + delta));
+      const newZoom = Math.max(0.8, Math.min(3, config.cameraZoom + delta));
       
       if (Math.abs(newZoom - config.cameraZoom) > 0.01) {
         onUpdate({ cameraZoom: newZoom });
@@ -50,13 +49,35 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
     <div ref={canvasRef} className="relative w-full h-full">
       <Canvas 
         shadows 
-        gl={{ antialias: true }}
+        gl={{ 
+          antialias: true,
+          alpha: false,
+          powerPreference: 'high-performance'
+        }}
+        camera={{ position: [0, 0, 0] }}
         className="w-full h-full"
       >
       <Suspense fallback={null}>
-        <Environment preset="city" />
-        <ambientLight intensity={0.5} />
-        <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} intensity={1} castShadow />
+        {/* Set canvas background color */}
+        <color attach="background" args={['#f3f4f6']} />
+        
+        {/* Custom HDR environment with toggleable background and ground */}
+        <Environment
+          files="/hdri/lilienstein_2k.hdr"
+          background={config.showEnvironmentBackground}
+          ground={config.showEnvironmentBackground ? { height: 1.1, radius: 300, scale: 50 } : undefined}
+        />
+              
+        {/* Минимальное освещение для HDR - только базовый ambient */}
+        <ambientLight intensity={6.4} />
+              
+        {/* Один направленный свет для легкого контраста */}
+        <directionalLight 
+          position={[5, 10, 5]} 
+          intensity={16.3} 
+        />
+              
+
         
         {/* Переключение камер: Перспективная для 3D, Ортогональная для 2D плана */}
         {is3D ? (
@@ -72,7 +93,7 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
         )}
 
         <Scene config={config} onUpdate={onUpdate} isUIVisible={isUIVisible} />
-
+        
         {is3D ? (
           <OrbitControls 
             ref={controlsRef}
@@ -93,14 +114,6 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
             dampingFactor={0.05}
           />
         )}
-        
-        <ContactShadows 
-          position={[0, -0.01, 0]} 
-          opacity={0.3} 
-          scale={20} 
-          blur={2.5} 
-          far={4.5} 
-        />
         
         {/* Grid controlled by ruler toggle */}
         {config.showDimensions && (
@@ -133,6 +146,7 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
         
       </Suspense>
     </Canvas>
+
     
     {/* Компактный зум контроль */}
     <div className="absolute bottom-6 left-6 bg-white/90 backdrop-blur-sm p-2 rounded-[4px] shadow-xl border border-gray-100 z-20">
@@ -157,7 +171,7 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
           
           <input 
             type="range" 
-            min="0.5" 
+            min="0.8" 
             max="3" 
             step="0.1" 
             value={config.cameraZoom} 
