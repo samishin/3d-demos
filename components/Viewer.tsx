@@ -52,7 +52,8 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
         gl={{ 
           antialias: true,
           alpha: false,
-          powerPreference: 'high-performance'
+          powerPreference: 'high-performance',
+          preserveDrawingBuffer: true
         }}
         camera={{ position: [0, 0, 0] }}
         className="w-full h-full"
@@ -69,12 +70,12 @@ const Viewer: React.FC<ViewerProps> = ({ config, onUpdate, isUIVisible }) => {
         />
               
         {/* Минимальное освещение для HDR - только базовый ambient */}
-        <ambientLight intensity={6.4} />
+        <ambientLight intensity={1.4} />
               
         {/* Один направленный свет для легкого контраста */}
         <directionalLight 
-          position={[5, 10, 5]} 
-          intensity={16.3} 
+          position={[5, 40, 5]} 
+          intensity={1.3} 
         />
               
 

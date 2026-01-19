@@ -1,11 +1,12 @@
 
 import React, { useMemo, useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import * as THREE from 'three';
-import { useTexture, Text, Html, useGLTF, useProgress } from '@react-three/drei';
+import { Text, Html, useGLTF, useProgress } from '@react-three/drei';
 import { useThree, useFrame, ThreeEvent } from '@react-three/fiber';
 import { ConfiguratorState, Material, Position2D } from '../types';
 import { MATERIALS } from '../constants';
 import { Move, Ruler } from 'lucide-react';
+import { resourceManager, useTexture } from '../utils/resourceManager';
 
 interface SceneProps {
   config: ConfiguratorState;
@@ -50,11 +51,11 @@ const DimensionLine = ({
       </line>
       {/* Ticks - ориентация зависит от режима и направления */}
       <mesh position={start} rotation={[0, horizontal ? 0 : Math.PI/2, viewMode === "2d" ? -Math.PI/2 : 0]}>
-        <boxGeometry args={[0.005, 0.05, 0.05]} />
+        <primitive object={createBoxGeometryWithUV(0.005, 0.05, 0.05)} />
         <meshBasicMaterial color={color} />
       </mesh>
       <mesh position={end} rotation={[0, horizontal ? 0 : Math.PI/2, viewMode === "2d" ? -Math.PI/2 : 0]}>
-        <boxGeometry args={[0.005, 0.05, 0.05]} />
+        <primitive object={createBoxGeometryWithUV(0.005, 0.05, 0.05)} />
         <meshBasicMaterial color={color} />
       </mesh>
       {/* Text - разворачиваем в 2D режиме */}
@@ -73,157 +74,12 @@ const DimensionLine = ({
   );
 };
 
-// Глобальный кэш текстур для предотвращения повторной загрузки
-const textureCache = new Map<string, THREE.Texture>();
 
-// Функция для получения текстуры из кэша или загрузки новой
-const getCachedTexture = (url: string): Promise<THREE.Texture | null> => {
-  return new Promise((resolve) => {
-    // Проверяем кэш
-    if (textureCache.has(url)) {
-      resolve(textureCache.get(url)!);
-      return;
-    }
-    
-    // Загружаем новую текстуру
-    const loader = new THREE.TextureLoader();
-    loader.load(
-      url,
-      (texture) => {
-        // Настройка текстуры для оптимальной производительности
-        texture.wrapS = THREE.RepeatWrapping;
-        texture.wrapT = THREE.RepeatWrapping;
-        texture.magFilter = THREE.LinearFilter;
-        texture.minFilter = THREE.LinearMipmapLinearFilter;
-        texture.generateMipmaps = true;
-        texture.needsUpdate = true;
-        
-        // Сохраняем в кэш
-        textureCache.set(url, texture);
-        resolve(texture);
-      },
-      undefined,
-      (error) => {
-        console.warn(`Не удалось загрузить текстуру ${url}:`, error);
-        resolve(null);
-      }
-    );
-  });
-};
+import PBRMaterial from './PBRMaterial';
+import OptimizedFenceGeometry from './OptimizedFence';
+import { createBoxGeometryWithUV, createCylinderGeometryWithUV, createPlaneGeometryWithUV, createPlinthGeometryWithUV, createBaseGeometryWithUV, createStellaGeometryWithUV, createVaseGeometryWithUV, createTableTopGeometryWithUV, createLegGeometryWithUV } from '../utils/geometryUtils';
 
-// Максимально оптимизированный компонент материалов
-const PBRMaterial = React.memo(({ material, highlight }: { material: Material; highlight?: boolean }) => {
-  const materialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
-  
-  // Мемоизированный маппинг материалов к папкам текстур
-  const textureConfig = useMemo(() => ({
-    'm1': {folder: 'gabbo', normalExt: 'png', hasZero: false},
-    'm2': {folder: 'Jalgis', normalExt: 'jpg', hasZero: false},
-    'm3': {folder: 'Jeltau', normalExt: 'jpg', hasZero: false},
-    'm4': {folder: 'Kapustinski', normalExt: 'jpg', hasZero: false},
-    'm5': {folder: 'Rombak', normalExt: 'png', hasZero: false}
-  }), []);
-  
-  const config = textureConfig[material.id] || textureConfig['m1'];
-  const textureFolder = config.folder;
-  const normalSuffix = config.hasZero ? '0_Normal' : '_Normal';
-  
-  // Асинхронная загрузка текстур с кэшированием
-  const [textures, setTextures] = useState<{
-    color: THREE.Texture | null;
-    normal: THREE.Texture | null;
-    roughness: THREE.Texture | null;
-  }>({ color: null, normal: null, roughness: null });
-  
-  // Загрузка текстур один раз при смене материала
-  useEffect(() => {
-    let isCancelled = false;
-    
-    const loadAllTextures = async () => {
-      try {
-        // Параллельная загрузка всех текстур
-        const [colorTex, normalTex, roughnessTex] = await Promise.all([
-          getCachedTexture(`./textures/${textureFolder}/${textureFolder}_Color.jpg`),
-          getCachedTexture(`./textures/${textureFolder}/${textureFolder}${normalSuffix}.${config.normalExt}`),
-          getCachedTexture(`./textures/${textureFolder}/${textureFolder}_Roughness.jpg`)
-        ]);
-        
-        // Только если компонент еще смонтирован
-        if (!isCancelled) {
-          setTextures({
-            color: colorTex,
-            normal: normalTex,
-            roughness: roughnessTex
-          });
-        }
-      } catch (error) {
-        console.error('Ошибка загрузки текстур:', error);
-      }
-    };
-    
-    loadAllTextures();
-    
-    return () => {
-      isCancelled = true;
-    };
-  }, [textureFolder, normalSuffix, config.normalExt]);
-  
-  // Переиспользуем существующий материал или создаем новый
-  if (!materialRef.current) {
-    const baseParams: any = {
-      color: highlight ? "#3b82f6" : material.color,
-      roughness: material.roughness,
-      metalness: material.metalness,
-      clearcoat: material.clearcoat || 0,
-      clearcoatRoughness: 0.05,
-      reflectivity: 0.5,
-      envMapIntensity: highlight ? 1.5 : 0.6,
-      emissive: highlight ? "#3b82f6" : "#000000",
-      emissiveIntensity: highlight ? 0.2 : 0
-    };
-    
-    // Добавляем доступные текстуры при создании
-    if (textures.color) baseParams.map = textures.color;
-    if (textures.normal) {
-      baseParams.normalMap = textures.normal;
-      baseParams.normalScale = new THREE.Vector2(1, 1);
-    }
-    if (textures.roughness) baseParams.roughnessMap = textures.roughness;
-    
-    materialRef.current = new THREE.MeshPhysicalMaterial(baseParams);
-  }
 
-  // Быстрое обновление материала без ререндеров
-  useLayoutEffect(() => {
-    if (materialRef.current) {
-      const mat = materialRef.current;
-      
-      // Мгновенное обновление всех свойств
-      mat.color.setStyle(highlight ? "#3b82f6" : material.color);
-      mat.roughness = material.roughness;
-      mat.metalness = material.metalness;
-      mat.clearcoat = material.clearcoat || 0;
-      mat.emissive.setStyle(highlight ? "#3b82f6" : "#000000");
-      mat.emissiveIntensity = highlight ? 0.3 : 0;
-      
-      // Мгновенное обновление текстур с проверкой наличия
-      mat.map = textures.color || null;
-      mat.normalMap = textures.normal || null;
-      mat.roughnessMap = textures.roughness || null;
-      
-      // Отключаем normalScale если нет normal map
-      if (!textures.normal) {
-        mat.normalScale = new THREE.Vector2(0, 0);
-      } else {
-        mat.normalScale = new THREE.Vector2(1, 1);
-      }
-      
-      mat.needsUpdate = true;
-    }
-  }, [textures.color, textures.normal, textures.roughness, material, highlight]);
-
-  return <primitive object={materialRef.current} />;
-});
 
 
 
@@ -389,10 +245,18 @@ const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boo
       shape.bezierCurveTo(0.8, 0.4, 0.7, -0.3, 0, -0.6);
       geom = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.02 });
       
-      // === UV КООРДИНАТЫ ДЛЯ ФИГУРЫ "СЕРДЦЕ" (s5) ===
-      // Здесь можно изменить UV координаты для текстурного наложения
-      // geom.attributes.uv.array - массив UV координат
-      // geom.attributes.uv needsUpdate = true после изменения
+      // Генерируем UV координаты для фигуры "сердце"
+      const uvAttribute = geom.attributes.uv;
+      if (uvAttribute) {
+        const uvArray = uvAttribute.array as Float32Array;
+        // Умеренное повторение текстуры (3 раза на метр)
+        const uvScale = 3;
+        for (let i = 0; i < uvArray.length; i += 2) {
+          uvArray[i] *= uvScale;
+          uvArray[i + 1] *= uvScale;
+        }
+        uvAttribute.needsUpdate = true;
+      }
     } else {
       const width = id === 's6' ? 1.4 : 0.8;
       const height = 1.2;
@@ -406,17 +270,21 @@ const StellaGeometry: React.FC<{ id: string; material: Material; highlight?: boo
         shape.lineTo(-width/2, -height/2);
         geom = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.01, bevelSize: 0.01 });
         
-        // === UV КООРДИНАТЫ ДЛЯ АРОК (s2, s3) ===
-        // Здесь можно изменить UV координаты для текстурного наложения
-        // geom.attributes.uv.array - массив UV координат
-        // geom.attributes.uv needsUpdate = true после изменения
+        // Генерируем UV координаты для арок (s2, s3)
+        const uvAttribute = geom.attributes.uv;
+        if (uvAttribute) {
+          const uvArray = uvAttribute.array as Float32Array;
+          // Умеренное повторение текстуры (3 раза на метр)
+          const uvScale = 3;
+          for (let i = 0; i < uvArray.length; i += 2) {
+            uvArray[i] *= uvScale;
+            uvArray[i + 1] *= uvScale;
+          }
+          uvAttribute.needsUpdate = true;
+        }
       } else {
-        geom = new THREE.BoxGeometry(width, height, depth);
-        
-        // === UV КООРДИНАТЫ ДЛЯ ПРЯМОУГОЛЬНЫХ СТЕЛ (s1, s6) ===
-        // Здесь можно изменить UV координаты для текстурного наложения
-        // geom.attributes.uv.array - массив UV координат
-        // geom.attributes.uv needsUpdate = true после изменения
+        // Используем специализированную геометрию со увеличенным UV повторением для стеллы
+        geom = createStellaGeometryWithUV(width, height, depth);
       }
     }
     geom.computeBoundingBox();
@@ -462,12 +330,12 @@ const BaseGeometry: React.FC<{ id: string; material: Material; stellaId?: string
   if (id === 'b3') {
     return (
       <group>
-        <mesh castShadow position={[0, 0.05, 0]}><boxGeometry args={[baseWidth + 0.2, 0.1, depth + 0.2]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-        <mesh castShadow position={[0, 0.15, 0]}><boxGeometry args={[baseWidth, 0.1, depth]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+        <mesh castShadow position={[0, 0.05, 0]}><primitive object={createBaseGeometryWithUV(baseWidth + 0.2, 0.1, depth + 0.2)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+        <mesh castShadow position={[0, 0.15, 0]}><primitive object={createBaseGeometryWithUV(baseWidth, 0.1, depth)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
       </group>
     );
   }
-  return <mesh castShadow position={[0, height / 2, 0]}><boxGeometry args={[baseWidth, height, depth]} /><PBRMaterial material={material} highlight={highlight} /></mesh>;
+  return <mesh castShadow position={[0, height / 2, 0]}><primitive object={createBaseGeometryWithUV(baseWidth, height, depth)} /><PBRMaterial material={material} highlight={highlight} /></mesh>;
 };
 
 const FlowerbedGeometry: React.FC<{ id: string; material: Material; width: number; length: number; highlight?: boolean }> = ({ id, material, width, length, highlight = false }) => {
@@ -476,19 +344,19 @@ const FlowerbedGeometry: React.FC<{ id: string; material: Material; width: numbe
   if (id === 'fb3') {
     return (
       <group>
-         <mesh castShadow position={[0, h/2, length - t/2]}><boxGeometry args={[width, h, t]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-         <mesh castShadow position={[width/2-t/2, h/2, length/2]}><boxGeometry args={[t, h, length]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-         <mesh castShadow position={[-(width/2-t/2), h/2, length/2]}><boxGeometry args={[t, h, length]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-         <mesh castShadow position={[0, h, length/2]}><boxGeometry args={[width-0.2, h, length-0.2]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+         <mesh castShadow position={[0, h/2, length - t/2]}><primitive object={createBoxGeometryWithUV(width, h, t)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+         <mesh castShadow position={[width/2-t/2, h/2, length/2]}><primitive object={createBoxGeometryWithUV(t, h, length)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+         <mesh castShadow position={[-(width/2-t/2), h/2, length/2]}><primitive object={createBoxGeometryWithUV(t, h, length)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+         <mesh castShadow position={[0, h, length/2]}><primitive object={createBoxGeometryWithUV(width-0.2, h, length-0.2)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
       </group>
     );
   }
   return (
     <group>
-      <mesh castShadow position={[0, h/2, length - t/2]}><boxGeometry args={[width, h, t]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-      <mesh castShadow position={[width/2-t/2, h/2, length/2]}><boxGeometry args={[t, h, length]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-      <mesh castShadow position={[-(width/2-t/2), h/2, length/2]}><boxGeometry args={[t, h, length]} /><PBRMaterial material={material} highlight={highlight} /></mesh>
-      {id === 'fb1' && <mesh castShadow position={[0, h/2, t/2]}><boxGeometry args={[width, h, t]} /><PBRMaterial material={material} highlight={highlight} /></mesh>}
+      <mesh castShadow position={[0, h/2, length - t/2]}><primitive object={createBoxGeometryWithUV(width, h, t)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+      <mesh castShadow position={[width/2-t/2, h/2, length/2]}><primitive object={createBoxGeometryWithUV(t, h, length)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+      <mesh castShadow position={[-(width/2-t/2), h/2, length/2]}><primitive object={createBoxGeometryWithUV(t, h, length)} /><PBRMaterial material={material} highlight={highlight} /></mesh>
+      {id === 'fb1' && <mesh castShadow position={[0, h/2, t/2]}><primitive object={createBoxGeometryWithUV(width, h, t)} /><PBRMaterial material={material} highlight={highlight} /></mesh>}
       <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, h * 0.4, length/2]}>
         <planeGeometry args={[width - t*2, length - t*2]} />
         <meshStandardMaterial 
@@ -537,35 +405,10 @@ const FenceSection = React.memo(({ start, end, vertical, fenceId, material, heig
     positions.push(new THREE.Vector3(0, -height/2 + railThickness, 0));
     
     // Дополнительные элементы в зависимости от типа
-    if (fenceId === 'f1') {
-      // Кованая классика - ограниченное количество цилиндров
-      const elementCount = Math.min(Math.floor(dist / 0.2), 15);
-      const cylinderGeo = new THREE.CylinderGeometry(0.005, 0.005, height - railThickness * 2, 8);
-      
-      for (let i = 0; i < elementCount; i++) {
-        geometries.push(cylinderGeo.clone());
-        positions.push(new THREE.Vector3(
-          (i * (dist / elementCount)) - (dist / 2) + (dist / elementCount / 2), 
-          0, 
-          0
-        ));
-      }
-    } else if (fenceId === 'f3') {
-      // Современный металл - три тонкие линии
-      const lineGeo = new THREE.BoxGeometry(dist, 0.005, 0.005);
-      [-0.05, 0, 0.05].forEach(offset => {
-        geometries.push(lineGeo.clone());
-        positions.push(new THREE.Vector3(0, offset, 0));
-      });
-    } else if (fenceId === 'f2') {
-      // Гранитные столбики - сплошная балка
-      const beamGeo = new THREE.BoxGeometry(dist, railThickness * 2, railThickness * 2);
-      geometries.push(beamGeo);
-      positions.push(new THREE.Vector3(0, 0, 0));
-    } else if (fenceId === 'f4') {
-      // Волна - массивная линия
-      const waveGeo = new THREE.BoxGeometry(dist, 0.4, 0.08);
-      geometries.push(waveGeo);
+    if (fenceId === 'f4') {
+      // Сплошная - массивная линия
+      const solidGeo = new THREE.BoxGeometry(dist, 0.4, 0.08);
+      geometries.push(solidGeo);
       positions.push(new THREE.Vector3(0, 0, 0));
     }
     
@@ -627,7 +470,7 @@ const Pillar = React.memo(({ pos, fenceId, material, height, pillarThickness }: 
   height: number,
   pillarThickness: number
 }) => {
-  // Для ограды "волна" используем более массивные гранитные столбики
+  // Для сплошной ограды используем массивные столбики
   const pillarWidth = fenceId === 'f4' ? 0.15 : pillarThickness;
   const pillarHeight = fenceId === 'f4' ? height + 0.15 : height + 0.05;
   
@@ -734,44 +577,12 @@ const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible 
   const siteBounds = useMemo(() => ({ minX: -sw/2, maxX: sw/2, minZ: -sl/2, maxZ: sl/2 }), [sw, sl]);
   const plinthBounds = useMemo(() => ({ minX: -pw/2, maxX: pw/2, minZ: -pl/2, maxZ: pl/2 }), [pw, pl]);
 
-  // Оптимизированная загрузка текстуры портрета с кэшированием
-  const [portraitTexture, setPortraitTexture] = useState<THREE.Texture | null>(null);
-  
-  // Загрузка текстуры портрета через useEffect для предотвращения перезагрузки сцены
-  useEffect(() => {
-    if (!portraitUrl) {
-      setPortraitTexture(null);
-      return;
-    }
-    
-    const loader = new THREE.TextureLoader();
-    loader.load(
-      portraitUrl,
-      (texture) => {
-        // Настройка текстуры
-        texture.wrapS = THREE.ClampToEdgeWrapping;
-        texture.wrapT = THREE.ClampToEdgeWrapping;
-        texture.magFilter = THREE.LinearFilter;
-        texture.minFilter = THREE.LinearFilter;
-        texture.generateMipmaps = false;
-        texture.needsUpdate = true;
-        
-        setPortraitTexture(texture);
-      },
-      undefined,
-      (error) => {
-        console.warn('Не удалось загрузить текстуру портрета:', error);
-        setPortraitTexture(null);
-      }
-    );
-    
-    // Cleanup функция для освобождения памяти
-    return () => {
-      if (portraitTexture) {
-        portraitTexture.dispose();
-      }
-    };
-  }, [portraitUrl]);
+  // Оптимизированная загрузка текстуры портрета через ResourceManager
+  const portraitTexture = useTexture(portraitUrl, {
+    wrapS: THREE.ClampToEdgeWrapping,
+    wrapT: THREE.ClampToEdgeWrapping,
+    generateMipmaps: false
+  });
   
   const portraitSize = useMemo(() => {
     if (!portraitTexture || !portraitTexture.image) return { width: 0.3, height: 0.4 };
@@ -944,7 +755,14 @@ const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible 
       {/* Участок - плоскость земли */}
       <GroundPlane width={sw} length={sl} />
 
-      {fence && <FenceGeometry id={fence.id} material={fenceMaterial} width={sw} length={sl} />}
+      {fence && (
+        <OptimizedFenceGeometry 
+          id={fence.id} 
+          material={fenceMaterial} 
+          width={sw} 
+          length={sl}
+        />
+      )}
 
       <Draggable
         id="plinth"
@@ -962,7 +780,7 @@ const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible 
           <group>
             {plinth && (
               <mesh position={[0, 0.05, 0]} receiveShadow>
-                <boxGeometry args={[pw, 0.1, pl]} />
+                <primitive object={createPlinthGeometryWithUV(pw, 0.1, pl)} />
                 <PBRMaterial material={plinthMaterial} highlight={isDraggingPlinth} />
               </mesh>
             )}
@@ -1073,7 +891,7 @@ const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible 
         >
             {(h) => (
               <mesh castShadow>
-                <cylinderGeometry args={[0.07, 0.05, 0.25]} />
+                <primitive object={createVaseGeometryWithUV(0.07, 0.05, 0.25)} />
                 <PBRMaterial material={v.material} highlight={h} />
               </mesh>
             )}
@@ -1104,11 +922,11 @@ const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible 
             {(h) => (
               <group>
                 <mesh position={[0, 0.35, 0]} castShadow>
-                  <cylinderGeometry args={[0.25, 0.25, 0.05]} />
+                  <primitive object={createTableTopGeometryWithUV(0.25, 0.05)} />
                   <PBRMaterial material={t.material} highlight={h} />
                 </mesh>
                 <mesh position={[0, 0.175, 0]} castShadow>
-                  <cylinderGeometry args={[0.03, 0.03, 0.35]} />
+                  <primitive object={createLegGeometryWithUV(0.03, 0.35)} />
                   <PBRMaterial material={t.material} highlight={h} />
                 </mesh>
               </group>
@@ -1140,15 +958,15 @@ const Scene: React.FC<SceneProps> = React.memo(({ config, onUpdate, isUIVisible 
           {(h) => (
             <group>
               <mesh position={[0, 0.2, 0]} castShadow>
-                <boxGeometry args={[0.8, 0.05, 0.3]} />
+                <primitive object={createBoxGeometryWithUV(0.8, 0.05, 0.3)} />
                 <PBRMaterial material={b.material} highlight={h} />
               </mesh>
               <mesh position={[-0.3, 0.1, 0]} castShadow>
-                <boxGeometry args={[0.05, 0.2, 0.25]} />
+                <primitive object={createBoxGeometryWithUV(0.05, 0.2, 0.25)} />
                 <PBRMaterial material={b.material} highlight={h} />
               </mesh>
               <mesh position={[0.3, 0.1, 0]} castShadow>
-                <boxGeometry args={[0.05, 0.2, 0.25]} />
+                <primitive object={createBoxGeometryWithUV(0.05, 0.2, 0.25)} />
                 <PBRMaterial material={b.material} highlight={h} />
               </mesh>
             </group>

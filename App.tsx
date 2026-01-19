@@ -5,17 +5,29 @@ import { MATERIALS, STELLAS, BASES, FLOWERBEDS, FENCES, PLINTHS } from './consta
 import Viewer from './components/Viewer';
 import Sidebar from './components/UI/Sidebar';
 import Preloader from './components/UI/Preloader';
+import TexturePreloader from './components/UI/TexturePreloader';
 import ErrorBoundary from './components/ErrorBoundary';
 import { Settings2, Ruler, Image as ImageIcon } from 'lucide-react';
 
 const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
+  const [texturesLoaded, setTexturesLoaded] = useState(false);
 
+  // Effect для отслеживания загрузки текстур
   useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 1500);
-    return () => clearTimeout(timer);
-  }, []);
+    const checkLoadingStatus = () => {
+      if (texturesLoaded) {
+        // После загрузки текстур ждем еще 3 секунды
+        const additionalDelay = setTimeout(() => {
+          setIsLoading(false);
+        }, 3000);
+        return () => clearTimeout(additionalDelay);
+      }
+    };
+    
+    return checkLoadingStatus();
+  }, [texturesLoaded]);
 
   const [config, setConfig] = useState<ConfiguratorState>({
     siteWidth: 300,
@@ -97,6 +109,7 @@ const App: React.FC = () => {
 
   return (
     <>
+      <TexturePreloader onLoadingComplete={() => setTexturesLoaded(true)} />
       {isLoading && <Preloader />}
       
       <div className="flex h-screen w-screen bg-gray-50 overflow-hidden font-sans">

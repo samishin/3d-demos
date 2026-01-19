@@ -31,10 +31,7 @@ export const FLOWERBEDS: CatalogItem[] = [
 ];
 
 export const FENCES: CatalogItem[] = [
-  { id: 'f1', name: 'Кованая классика', previewUrl: 'https://picsum.photos/200/200?random=7', modelUrl: '' },
-  { id: 'f2', name: 'Гранитные столбики', previewUrl: 'https://picsum.photos/200/200?random=8', modelUrl: '' },
-  { id: 'f3', name: 'Современный металл', previewUrl: 'https://picsum.photos/200/200?random=9', modelUrl: '' },
-  { id: 'f4', name: 'Волна', previewUrl: 'https://picsum.photos/200/200?random=14', modelUrl: '' },
+  { id: 'f4', name: 'Сплошная', previewUrl: 'https://picsum.photos/200/200?random=14', modelUrl: '' },
 ];
 
 export const PLINTHS: CatalogItem[] = [

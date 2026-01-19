@@ -1,14 +1,38 @@
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import { ConfiguratorState } from '../types';
+import { INTER_FONT_BASE64 } from '../assets/fonts/inter-base64';
+
+// Используем кастомный шрифт Inter из отдельного файла
 
 export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTMLCanvasElement | null) => {
   try {
+    // First create screenshot without UI elements
+    const cleanScreenshot = await captureCleanScreenshot(canvasElement);
+    
     const doc = new jsPDF({
       orientation: 'portrait',
       unit: 'mm',
       format: 'a4'
     });
+
+    // Добавляем кастомный шрифт Inter из base64
+    if (INTER_FONT_BASE64 && INTER_FONT_BASE64.trim() !== '') {
+      try {
+        // Извлекаем base64 данные
+        const base64Data = INTER_FONT_BASE64.replace(/data:font\/[^;]+;base64,/, '');
+        
+        // @ts-ignore
+        doc.addFileToVFS('Inter-Regular.ttf', base64Data);
+        // @ts-ignore
+        doc.addFont('Inter-Regular.ttf', 'Inter', 'normal');
+        doc.setFont('Inter');
+      } catch (fontError) {
+        console.warn('Ошибка загрузки шрифта Inter:', fontError);
+        doc.setFont('helvetica');
+      }
+    } else {
+      doc.setFont('helvetica');
+    }
 
     // Отступы
     const margin = 15;
@@ -16,18 +40,49 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
     const pageWidth = 210;
     const pageHeight = 297;
 
-    // Заголовок
+    // Сначала добавляем изображение
+    if (cleanScreenshot) {
+      try {
+        const imgWidth = pageWidth - 2 * margin;
+        const imgHeight = (cleanScreenshot.height * imgWidth) / cleanScreenshot.width;
+        
+        // Если изображение не помещается на странице - новая страница
+        if (currentY + imgHeight > pageHeight - margin) {
+          doc.addPage();
+          currentY = margin;
+        }
+        
+        doc.addImage(cleanScreenshot.data, 'PNG', margin, currentY, imgWidth, imgHeight);
+        currentY += imgHeight + 10;
+        
+        // Image caption
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'italic');
+        doc.setTextColor(120, 120, 120);
+        doc.text('Configuration Visualization', margin, currentY);
+        currentY += 15;
+        
+        // Разделительная линия
+        doc.setDrawColor(200, 200, 200);
+        doc.line(margin, currentY, pageWidth - margin, currentY);
+        currentY += 12;
+      } catch (imageError) {
+        console.warn('Ошибка добавления изображения:', imageError);
+      }
+    }
+
+    // Header
     doc.setFontSize(20);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(0, 0, 0);
-    doc.text('Конфигурация мемориального комплекса', margin, currentY);
+    doc.text('Memorial Complex Configuration', margin, currentY);
     currentY += 15;
 
-    // Подзаголовок
+    // Subtitle
     doc.setFontSize(12);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(100, 100, 100);
-    doc.text(`Дата: ${new Date().toLocaleDateString('ru-RU')} ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`, margin, currentY);
+    doc.text(`Date: ${new Date().toLocaleDateString('en-US')} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`, margin, currentY);
     currentY += 12;
 
     // Разделительная линия
@@ -35,44 +90,44 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
     doc.line(margin, currentY, pageWidth - margin, currentY);
     currentY += 12;
 
-    // Основные параметры
+    // Main Parameters
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(0, 0, 0);
-    doc.text('Основные параметры:', margin, currentY);
+    doc.text('Main Parameters:', margin, currentY);
     currentY += 12;
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    // Размеры участка
-    doc.text(`Размеры участка: ${config.siteWidth} × ${config.siteLength} см`, margin + 5, currentY);
+    // Site Dimensions
+    doc.text(`Site Size: ${config.siteWidth} × ${config.siteLength} cm`, margin + 5, currentY);
     currentY += 8;
 
-    // Размеры цоколя
-    doc.text(`Размеры цоколя: ${config.plinthWidth} × ${config.plinthLength} см`, margin + 5, currentY);
+    // Plinth Dimensions
+    doc.text(`Plinth Size: ${config.plinthWidth} × ${config.plinthLength} cm`, margin + 5, currentY);
     currentY += 8;
 
-    // Размеры цветника
-    doc.text(`Размеры цветника: ${config.flowerbedWidth} × ${config.flowerbedLength} см`, margin + 5, currentY);
+    // Flowerbed Dimensions
+    doc.text(`Flowerbed Size: ${config.flowerbedWidth} × ${config.flowerbedLength} cm`, margin + 5, currentY);
     currentY += 12;
 
-    // Материалы
+    // Materials
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
-    doc.text('Материалы:', margin, currentY);
+    doc.text('Materials:', margin, currentY);
     currentY += 12;
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    // Список материалов
+    // Materials list
     const materials = [
-      { name: 'Стела', material: config.stellaMaterial },
-      { name: 'Цоколь', material: config.plinthMaterial },
-      { name: 'Подставка', material: config.baseMaterial },
-      { name: 'Цветник', material: config.flowerbedMaterial },
-      { name: 'Ограда', material: config.fenceMaterial }
+      { name: 'Stella', material: config.stellaMaterial },
+      { name: 'Plinth', material: config.plinthMaterial },
+      { name: 'Base', material: config.baseMaterial },
+      { name: 'Flowerbed', material: config.flowerbedMaterial },
+      { name: 'Fence', material: config.fenceMaterial }
     ];
 
     materials.forEach(({ name, material }) => {
@@ -84,53 +139,53 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
 
     currentY += 8;
 
-    // Компоненты
+    // Components
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
-    doc.text('Компоненты:', margin, currentY);
+    doc.text('Components:', margin, currentY);
     currentY += 12;
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    // Список компонентов
+    // Components list
     const components = [
-      { name: 'Стела', item: config.stella },
-      { name: 'Цоколь', item: config.plinth },
-      { name: 'Подставка', item: config.base },
-      { name: 'Цветник', item: config.flowerbed },
-      { name: 'Ограда', item: config.fence }
+      { name: 'Stella', item: config.stella },
+      { name: 'Plinth', item: config.plinth },
+      { name: 'Base', item: config.base },
+      { name: 'Flowerbed', item: config.flowerbed },
+      { name: 'Fence', item: config.fence }
     ];
 
     components.forEach(({ name, item }) => {
-      const itemName = item ? item.name : 'Не выбрано';
+      const itemName = item ? item.name : 'Not Selected';
       doc.text(`${name}: ${itemName}`, margin + 5, currentY);
       currentY += 8;
     });
 
     currentY += 8;
 
-    // Дополнительные элементы
+    // Additional Elements
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
-    doc.text('Дополнительные элементы:', margin, currentY);
+    doc.text('Additional Elements:', margin, currentY);
     currentY += 12;
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    doc.text(`Вазы: ${config.extras.vases.length} шт.`, margin + 5, currentY);
+    doc.text(`Vases: ${config.extras.vases.length} pcs`, margin + 5, currentY);
     currentY += 8;
-    doc.text(`Столики: ${config.extras.tables.length} шт.`, margin + 5, currentY);
+    doc.text(`Tables: ${config.extras.tables.length} pcs`, margin + 5, currentY);
     currentY += 8;
-    doc.text(`Лавочки: ${config.extras.benches.length} шт.`, margin + 5, currentY);
+    doc.text(`Benches: ${config.extras.benches.length} pcs`, margin + 5, currentY);
     currentY += 12;
 
-    // Гравировка
+    // Inscription
     if (config.inscription || config.portraitUrl) {
       doc.setFontSize(14);
       doc.setFont('helvetica', 'bold');
-      doc.text('Гравировка:', margin, currentY);
+      doc.text('Inscription:', margin, currentY);
       currentY += 12;
 
       doc.setFontSize(10);
@@ -143,57 +198,13 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
       }
 
       if (config.portraitUrl) {
-        doc.text('Портрет: загружен', margin + 5, currentY);
+        doc.text('Portrait: uploaded', margin + 5, currentY);
         currentY += 8;
       }
       currentY += 4;
     }
 
-    // Разделительная линия перед изображением
-    if (currentY > pageHeight - 80) {
-      doc.addPage();
-      currentY = margin;
-    } else {
-      doc.setDrawColor(200, 200, 200);
-      doc.line(margin, currentY, pageWidth - margin, currentY);
-      currentY += 12;
-    }
 
-    // Добавление скриншота сцены если доступен canvas
-    if (canvasElement) {
-      try {
-        const canvas = await html2canvas(canvasElement, {
-          useCORS: true,
-          scale: 1.5,
-          backgroundColor: '#f9fafb',
-          logging: false
-        });
-
-        const imgData = canvas.toDataURL('image/png');
-        const imgWidth = pageWidth - 2 * margin;
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-        // Если изображение не помещается на странице - новая страница
-        if (currentY + imgHeight > pageHeight - margin) {
-          doc.addPage();
-          currentY = margin;
-        }
-
-        doc.addImage(imgData, 'PNG', margin, currentY, imgWidth, imgHeight);
-        currentY += imgHeight + 10;
-        
-        // Подпись к изображению
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'italic');
-        doc.setTextColor(120, 120, 120);
-        doc.text('Визуализация конфигурации', margin, currentY);
-      } catch (canvasError) {
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'italic');
-        doc.setTextColor(150, 150, 150);
-        doc.text('Скриншот сцены недоступен', margin, currentY);
-      }
-    }
 
     // Финальная информация
     if (currentY > pageHeight - 30) {
@@ -206,8 +217,8 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(150, 150, 150);
-    doc.text('Сгенерировано в Eternity 3D Configurator', margin, pageHeight - 15);
-    doc.text(`Версия: 1.0`, pageWidth - margin - 40, pageHeight - 15);
+    doc.text('Generated by Eternity 3D Configurator', margin, pageHeight - 15);
+    doc.text(`Version: 1.0`, pageWidth - margin - 40, pageHeight - 15);
 
     // Сохранение файла
     const fileName = `memorial-configuration-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.pdf`;
@@ -216,6 +227,46 @@ export const exportToPDF = async (config: ConfiguratorState, canvasElement: HTML
     return true;
   } catch (error) {
     throw error;
+  }
+};
+
+// Function to create clean screenshot without UI elements
+const captureCleanScreenshot = async (canvasElement: HTMLCanvasElement | null): Promise<{data: string, width: number, height: number} | null> => {
+  if (!canvasElement) return null;
+  
+  try {
+    // Временно скрываем UI элементы
+    const uiElements = document.querySelectorAll('.gizmo-helper, .MuiBackdrop-root, .backdrop-blur, [class*="gizmo"]');
+    const hiddenElements: HTMLElement[] = [];
+    
+    // Скрываем элементы
+    uiElements.forEach(el => {
+      const element = el as HTMLElement;
+      if (element.style.display !== 'none') {
+        element.style.display = 'none';
+        hiddenElements.push(element);
+      }
+    });
+    
+    // Ждем немного чтобы изменения применились
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Take screenshot
+    const imgData = canvasElement.toDataURL('image/png', 1.0);
+    
+    // Восстанавливаем элементы
+    hiddenElements.forEach(el => {
+      el.style.display = '';
+    });
+    
+    return {
+      data: imgData,
+      width: canvasElement.width,
+      height: canvasElement.height
+    };
+  } catch (error) {
+    console.warn('Error creating clean screenshot:', error);
+    return null;
   }
 };
 
